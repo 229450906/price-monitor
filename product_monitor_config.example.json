@@ -1,0 +1,86 @@
+{
+  "log_file": "product_price_log.csv",
+  "monitor": {
+    "interval_seconds": 120,
+    "repeat_alert_hours": 12,
+    "timeout_seconds": 30
+  },
+  "notify": {
+    "bark_device_key": "env:PRICE_BARK_DEVICE_KEY",
+    "bark_server": "https://api.day.app",
+    "desktop_beep": true,
+    "ntfy_server": "https://ntfy.sh",
+    "ntfy_token": "env:PRICE_NTFY_TOKEN",
+    "ntfy_topic": "env:PRICE_NTFY_TOPIC",
+    "pushplus_token": "env:PRICE_PUSHPLUS_TOKEN",
+    "smtp": {
+      "from": "env:PRICE_SMTP_FROM",
+      "host": "env:PRICE_SMTP_HOST",
+      "password": "env:PRICE_SMTP_PASSWORD",
+      "port": 465,
+      "ssl": true,
+      "starttls": false,
+      "to": [
+        "env:PRICE_SMTP_TO"
+      ],
+      "username": "env:PRICE_SMTP_USERNAME"
+    },
+    "telegram_bot_token": "env:PRICE_TELEGRAM_BOT_TOKEN",
+    "telegram_chat_id": "env:PRICE_TELEGRAM_CHAT_ID",
+    "title": "Product deal alert"
+  },
+  "providers": [
+    {
+      "condition": "all",
+      "enabled": false,
+      "name": "PriceRank",
+      "source_type": "aggregator",
+      "url_template": "https://price-rank.com/search?keyword={query_plus}"
+    },
+    {
+      "condition": "new",
+      "enabled": true,
+      "name": "Yahoo Shopping",
+      "source_type": "shop search",
+      "url_template": "https://shopping.yahoo.co.jp/search?p={query_plus}"
+    },
+    {
+      "condition": "new",
+      "enabled": true,
+      "name": "Rakuten",
+      "source_type": "shop search",
+      "url_template": "https://search.rakuten.co.jp/search/mall/{query_path}/"
+    },
+    {
+      "condition": "used",
+      "enabled": true,
+      "name": "Mercari",
+      "source_type": "flea market",
+      "url_template": "https://jp.mercari.com/search?keyword={query_plus}&sort=price&order=asc"
+    },
+    {
+      "condition": "used",
+      "enabled": true,
+      "name": "Yahoo Auctions",
+      "source_type": "auction",
+      "url_template": "https://auctions.yahoo.co.jp/search/search?p={query_plus}&n=50&s1=cbids&o1=a"
+    },
+    {
+      "condition": "used",
+      "enabled": true,
+      "name": "HardOff NetMall",
+      "source_type": "shop used",
+      "url_template": "https://netmall.hardoff.co.jp/search/?q={query_plus}"
+    },
+    {
+      "condition": "used",
+      "enabled": true,
+      "name": "Janpara",
+      "source_type": "shop used",
+      "url_template": "https://www.janpara.co.jp/sale/search/result/?KEYWORDS={query_plus}"
+    }
+  ],
+  "report_file": "product_price_report.md",
+  "state_file": ".product_price_state.json",
+  "watches": []
+}

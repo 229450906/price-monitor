@@ -1,0 +1,26 @@
+# Secrets
+.product_price_monitor.env
+*.env
+!.env.example
+!product_price_monitor.env.example
+
+# Local monitor configuration and runtime output
+product_monitor_config.json
+.product_price_state.json
+product_price_log.csv
+product_price_report.md
+*.tmp
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
