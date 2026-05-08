@@ -245,7 +245,7 @@ def watch_key(name: str) -> str:
 
 def terms_for_query(query: str) -> list[str]:
     lowered = query.lower()
-    terms = re.findall(r"[a-z0-9][a-z0-9.+_-]*|[\u3040-\u30ff\u3400-\u9fff]{2,}", lowered)
+    terms = re.findall(r"[a-z]+|\d+|[\u3040-\u30ff\u3400-\u9fff]{2,}", lowered)
     cleaned: list[str] = []
     for term in terms:
         if len(term) < 2 and not term.isdigit():
@@ -255,70 +255,209 @@ def terms_for_query(query: str) -> list[str]:
     return cleaned
 
 
+def text_terms(text: str) -> list[str]:
+    return terms_for_query(strip_html(text))
+
+
+def default_min_matched_terms(query_terms: list[str]) -> int:
+    if len(query_terms) <= 4:
+        return len(query_terms)
+    return max(4, int(len(query_terms) * 0.75))
+
+
+def has_consecutive_terms(needle: list[str], haystack: list[str]) -> bool:
+    if not needle:
+        return True
+    if len(needle) > len(haystack):
+        return False
+    width = len(needle)
+    return any(haystack[index : index + width] == needle for index in range(len(haystack) - width + 1))
+
+
+def has_required_query_sequence(query_terms: list[str], snippet: str, watch: dict[str, Any]) -> bool:
+    if not bool(watch.get("require_query_sequence", True)):
+        return True
+    if len(query_terms) < 2:
+        return True
+    if not all(re.fullmatch(r"[a-z]+|\d+", term) for term in query_terms):
+        return True
+    return has_consecutive_terms(query_terms, text_terms(snippet))
+
+
+def parse_price(value: str) -> int:
+    return int(value.replace(",", ""))
+
+
+def accepted_candidate(
+    price: int,
+    snippet: str,
+    watch: dict[str, Any],
+    provider: dict[str, Any],
+    query_terms: list[str],
+    min_matched_terms: int,
+) -> dict[str, Any] | None:
+    min_price = int(watch.get("min_price_jpy", 500))
+    max_price = int(watch.get("max_price_jpy", 2_000_000))
+    if not (min_price <= price <= max_price):
+        return None
+
+    lower_snippet = snippet.lower()
+    risky_terms = watch.get("exclude_terms", DEFAULT_RISKY_TERMS)
+    accessory_terms = watch.get("accessory_terms", DEFAULT_ACCESSORY_TERMS)
+    allow_risky = bool(watch.get("allow_risky", False))
+    allow_accessory = bool(watch.get("allow_accessory", False))
+
+    if not allow_risky and any(term.lower() in lower_snippet for term in risky_terms):
+        return None
+    if not allow_accessory and any(term.lower() in lower_snippet for term in accessory_terms):
+        return None
+
+    matched_terms = [term for term in query_terms if term.lower() in lower_snippet]
+    if len(matched_terms) < min_matched_terms:
+        return None
+    if not has_required_query_sequence(query_terms, snippet, watch):
+        return None
+
+    score = len(matched_terms)
+    if provider.get("condition") == "new":
+        score += 1
+    if provider.get("source_type") == "shop used":
+        score += 1
+
+    return {"score": score, "matched_terms": matched_terms}
+
+
+ITEM_URL_PATTERNS = [
+    re.compile(r"https?://(?:page\.)?auctions\.yahoo\.co\.jp/jp/auction/[A-Za-z0-9_-]+"),
+    re.compile(r"https?://jp\.mercari\.com/item/[A-Za-z0-9_-]+"),
+    re.compile(r"https?://item\.rakuten\.co\.jp/[^\"'<>\s\\]+"),
+    re.compile(r"https?://store\.shopping\.yahoo\.co\.jp/[^\"'<>\s\\]+"),
+    re.compile(r"https?://netmall\.hardoff\.co\.jp/[^\"'<>\s\\]+"),
+    re.compile(r"https?://www\.janpara\.co\.jp/[^\"'<>\s\\]+"),
+]
+
+
+def extract_item_url(raw_window: str, base_url: str) -> str:
+    normalized = html.unescape(raw_window).replace("\\/", "/")
+    hrefs = re.findall(r"""href\s*=\s*["']([^"']+)["']""", normalized, flags=re.IGNORECASE)
+    urls = [urllib.parse.urljoin(base_url, href) for href in hrefs]
+    for pattern in ITEM_URL_PATTERNS:
+        urls.extend(match.group(0) for match in pattern.finditer(normalized))
+    for url in urls:
+        clean_url = url.split("#", 1)[0]
+        if any(pattern.fullmatch(clean_url) for pattern in ITEM_URL_PATTERNS):
+            return clean_url
+    return ""
+
+
+def min_matched_terms_for_watch(watch: dict[str, Any], query_terms: list[str]) -> int:
+    min_matched_terms = watch.get("min_matched_terms")
+    if min_matched_terms is None:
+        return default_min_matched_terms(query_terms)
+    return int(min_matched_terms)
+
+
 PRICE_PATTERNS = [
     re.compile(r"(?:¥|￥)\s*([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{4,8})"),
     re.compile(r"([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{4,8})\s*円"),
 ]
 
 
-def extract_prices(raw: str, watch: dict[str, Any], provider: dict[str, Any]) -> list[dict[str, Any]]:
-    min_price = int(watch.get("min_price_jpy", 500))
-    max_price = int(watch.get("max_price_jpy", 2_000_000))
+def extract_yahoo_auction_prices(
+    raw: str,
+    watch: dict[str, Any],
+    provider: dict[str, Any],
+    base_url: str,
+) -> list[dict[str, Any]]:
     query_terms = watch.get("include_terms") or terms_for_query(watch["name"])
-    min_matched_terms = watch.get("min_matched_terms")
-    if min_matched_terms is None:
-        min_matched_terms = min(2, len(query_terms)) if query_terms else 0
-    min_matched_terms = int(min_matched_terms)
-    risky_terms = watch.get("exclude_terms", DEFAULT_RISKY_TERMS)
-    accessory_terms = watch.get("accessory_terms", DEFAULT_ACCESSORY_TERMS)
-    allow_risky = bool(watch.get("allow_risky", False))
-    allow_accessory = bool(watch.get("allow_accessory", False))
+    min_matched_terms = min_matched_terms_for_watch(watch, query_terms)
+    candidates: list[dict[str, Any]] = []
+    product_blocks = re.findall(r'(?is)<li class="Product\b.*?</li>', raw)
+
+    for block in product_blocks:
+        item_url = extract_item_url(block, base_url)
+        if not item_url:
+            continue
+
+        price: int | None = None
+        buy_now_label = re.search(
+            r'(?is)<span class="Product__label">\s*即決\s*</span>\s*'
+            r'<span class="Product__priceValue[^"]*">\s*([0-9,]+)\s*円\s*</span>',
+            block,
+        )
+        if buy_now_label:
+            price = parse_price(buy_now_label.group(1))
+        else:
+            buy_now_match = re.search(r'data-auction-buynowprice="([0-9]+)"', block)
+            if buy_now_match:
+                price = parse_price(buy_now_match.group(1))
+        if price is None:
+            continue
+
+        snippet = strip_html(block)
+        accepted = accepted_candidate(price, snippet, watch, provider, query_terms, min_matched_terms)
+        if not accepted:
+            continue
+
+        candidates.append(
+            {
+                "price_jpy": price,
+                "snippet": snippet[:260],
+                "url": item_url,
+                **accepted,
+            }
+        )
+
+    return dedupe_candidates(candidates)
+
+
+def dedupe_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    candidates.sort(key=lambda item: (item["price_jpy"], -item["score"]))
+    deduped: list[dict[str, Any]] = []
+    seen: set[tuple[int, str]] = set()
+    for item in candidates:
+        identity = (item["price_jpy"], item.get("url", ""))
+        if identity in seen:
+            continue
+        seen.add(identity)
+        deduped.append(item)
+    return deduped[:10]
+
+
+def extract_prices(raw: str, watch: dict[str, Any], provider: dict[str, Any], base_url: str = "") -> list[dict[str, Any]]:
+    query_terms = watch.get("include_terms") or terms_for_query(watch["name"])
+    min_matched_terms = min_matched_terms_for_watch(watch, query_terms)
+    if provider.get("name") == "Yahoo Auctions":
+        return extract_yahoo_auction_prices(raw, watch, provider, base_url)
+    require_item_url = bool(provider.get("require_item_url", provider.get("name") == "Yahoo Auctions"))
     candidates: list[dict[str, Any]] = []
 
     for pattern in PRICE_PATTERNS:
         for match in pattern.finditer(raw):
-            price = int(match.group(1).replace(",", ""))
-            if not (min_price <= price <= max_price):
-                continue
+            price = parse_price(match.group(1))
 
             left = max(0, match.start() - 700)
             right = min(len(raw), match.end() + 700)
+            raw_window = raw[left:right]
             snippet = strip_html(raw[left:right])
-            lower_snippet = snippet.lower()
 
-            if not allow_risky and any(term.lower() in lower_snippet for term in risky_terms):
+            accepted = accepted_candidate(price, snippet, watch, provider, query_terms, min_matched_terms)
+            if not accepted:
                 continue
-            if not allow_accessory and any(term.lower() in lower_snippet for term in accessory_terms):
+            item_url = extract_item_url(raw_window, base_url)
+            if require_item_url and not item_url:
                 continue
-
-            matched_terms = [term for term in query_terms if term.lower() in lower_snippet]
-            if len(matched_terms) < min_matched_terms:
-                continue
-
-            score = len(matched_terms)
-            if provider.get("condition") == "new":
-                score += 1
-            if provider.get("source_type") == "shop used":
-                score += 1
 
             candidates.append(
                 {
                     "price_jpy": price,
                     "snippet": snippet[:260],
-                    "score": score,
-                    "matched_terms": matched_terms,
+                    "url": item_url,
+                    **accepted,
                 }
             )
 
-    candidates.sort(key=lambda item: (item["price_jpy"], -item["score"]))
-    deduped: list[dict[str, Any]] = []
-    seen_prices: set[int] = set()
-    for item in candidates:
-        if item["price_jpy"] in seen_prices:
-            continue
-        seen_prices.add(item["price_jpy"])
-        deduped.append(item)
-    return deduped[:10]
+    return dedupe_candidates(candidates)
 
 
 def condition_allowed(watch: dict[str, Any], provider: dict[str, Any]) -> bool:
@@ -348,13 +487,14 @@ def check_provider(watch: dict[str, Any], provider: dict[str, Any], config: dict
     try:
         timeout = int(provider.get("timeout_seconds", config.get("monitor", {}).get("timeout_seconds", 30)))
         raw = fetch_text(url, timeout)
-        candidates = extract_prices(raw, watch, provider)
+        candidates = extract_prices(raw, watch, provider, url)
         if not candidates:
             result["error"] = "No relevant price found"
             return result
         best = candidates[0]
         result["price_jpy"] = best["price_jpy"]
         result["snippet"] = best["snippet"]
+        result["url"] = best.get("url") or url
     except urllib.error.HTTPError as exc:
         result["error"] = f"HTTP {exc.code}: {exc.reason}"
     except urllib.error.URLError as exc:

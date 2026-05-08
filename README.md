@@ -117,6 +117,7 @@ Use `--no-alert-first-seen` if you only want alerts after a baseline has already
 
 The default filters reject high-risk terms such as `ジャンク`, `訳あり`, `動作未確認`, `箱のみ`, and `for parts`.
 Accessory terms such as `cable`, `adapter`, `case`, `cover`, `ケーブル`, and `ケース` are also filtered by default.
+Yahoo Auctions results use item links and `即決` / buy-now prices only; current bid prices are ignored because they are not direct purchase prices.
 
 Allow risky listings:
 
