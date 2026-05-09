@@ -97,6 +97,7 @@ DEFAULT_PROVIDERS = [
         "condition": "new",
         "url_template": "https://shopping.yahoo.co.jp/search?p={query_plus}",
         "enabled": True,
+        "require_item_url": True,
     },
     {
         "name": "Rakuten",
@@ -104,6 +105,7 @@ DEFAULT_PROVIDERS = [
         "condition": "new",
         "url_template": "https://search.rakuten.co.jp/search/mall/{query_path}/",
         "enabled": True,
+        "require_item_url": True,
     },
     {
         "name": "Mercari",
@@ -111,6 +113,7 @@ DEFAULT_PROVIDERS = [
         "condition": "used",
         "url_template": "https://jp.mercari.com/search?keyword={query_plus}&sort=price&order=asc",
         "enabled": True,
+        "require_item_url": True,
     },
     {
         "name": "Yahoo Auctions",
@@ -118,6 +121,7 @@ DEFAULT_PROVIDERS = [
         "condition": "used",
         "url_template": "https://auctions.yahoo.co.jp/search/search?p={query_plus}&n=50&s1=cbids&o1=a",
         "enabled": True,
+        "require_item_url": True,
     },
     {
         "name": "HardOff NetMall",
@@ -125,6 +129,7 @@ DEFAULT_PROVIDERS = [
         "condition": "used",
         "url_template": "https://netmall.hardoff.co.jp/search/?q={query_plus}",
         "enabled": True,
+        "require_item_url": True,
     },
     {
         "name": "Janpara",
@@ -132,7 +137,60 @@ DEFAULT_PROVIDERS = [
         "condition": "used",
         "url_template": "https://www.janpara.co.jp/sale/search/result/?KEYWORDS={query_plus}",
         "enabled": True,
+        "require_item_url": True,
     },
+]
+
+DEFAULT_CHINA_REFERENCE = {
+    "enabled": True,
+    "provider": "Goofish",
+    "currency": "CNY",
+    "url_template": "https://www.goofish.com/search?q={query_plus}",
+    "api_url_template": "https://h5api.m.goofish.com/h5/mtop.taobao.idlemtopsearch.pc.search/1.0/",
+    "app_key": "34839810",
+    "api": "mtop.taobao.idlemtopsearch.pc.search",
+    "rows_per_page": 30,
+    "timeout_seconds": 12,
+    "min_price_cny": 100,
+    "max_price_cny": 200_000,
+    "cookie": "env:PRICE_GOOFISH_COOKIE",
+}
+
+DEFAULT_CHINA_RISKY_TERMS = [
+    "故障",
+    "坏",
+    "维修",
+    "拆机",
+    "尸体",
+    "无显示",
+    "花屏",
+    "不能用",
+    "不亮",
+    "报废",
+    "空盒",
+    "盒子",
+    "包装盒",
+]
+
+DEFAULT_CHINA_ACCESSORY_TERMS = [
+    "配件",
+    "保护",
+    "保护壳",
+    "保护套",
+    "线",
+    "数据线",
+    "转接线",
+    "供电线",
+    "支架",
+    "底座",
+    "收纳",
+    "收纳包",
+    "贴膜",
+    "镜片",
+    "头带",
+    "电池头带",
+    "面罩",
+    "手柄",
 ]
 
 
@@ -223,8 +281,8 @@ def strip_html(raw: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def fetch_text(url: str, timeout: int) -> str:
-    request = urllib.request.Request(url, headers=DEFAULT_HEADERS)
+def fetch_text(url: str, timeout: int, headers: dict[str, str] | None = None) -> str:
+    request = urllib.request.Request(url, headers={**DEFAULT_HEADERS, **(headers or {})})
     with urllib.request.urlopen(request, timeout=timeout) as response:
         body = response.read()
         encoding = response.headers.get_content_charset() or "utf-8"
@@ -458,6 +516,454 @@ def extract_prices(raw: str, watch: dict[str, Any], provider: dict[str, Any], ba
             )
 
     return dedupe_candidates(candidates)
+
+
+def merged_china_reference_config(config: dict[str, Any]) -> dict[str, Any]:
+    reference = dict(DEFAULT_CHINA_REFERENCE)
+    reference.update(config.get("china_reference") or {})
+    return reference
+
+
+def parse_cny_price(value: Any) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        for path in (
+            ("price",),
+            ("value",),
+            ("amount",),
+            ("integer",),
+            ("priceInfo",),
+        ):
+            price = parse_cny_price(first_nested_value(value, [path]))
+            if price is not None:
+                return price
+        integer = first_nested_value(value, [("integer", "text"), ("integer", "value")])
+        decimal = first_nested_value(value, [("decimal", "text"), ("decimal", "value")])
+        if integer is not None:
+            raw = f"{integer}.{decimal}" if decimal is not None else str(integer)
+            return parse_cny_price(raw)
+        return None
+    if isinstance(value, list):
+        for item in value:
+            price = parse_cny_price(item)
+            if price is not None:
+                return price
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        price = float(value)
+        if price <= 0:
+            return None
+        # Several Alibaba/Goofish payloads carry prices in cents as plain integers.
+        if isinstance(value, int) and value >= 100_000:
+            price = price / 100
+        return price
+
+    text = html.unescape(str(value))
+    match = re.search(r"(?:¥|￥|rmb|cny)?\s*([0-9]+(?:,[0-9]{3})*(?:\.[0-9]+)?)\s*(?:元)?", text, flags=re.IGNORECASE)
+    if not match:
+        return None
+    try:
+        return float(match.group(1).replace(",", ""))
+    except ValueError:
+        return None
+
+
+def first_nested_value(data: Any, paths: list[tuple[str, ...]]) -> Any:
+    for path in paths:
+        cursor = data
+        for key in path:
+            if not isinstance(cursor, dict) or key not in cursor:
+                cursor = None
+                break
+            cursor = cursor[key]
+        if cursor not in (None, ""):
+            return cursor
+    return None
+
+
+def text_from_value(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return strip_html(value)
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, dict):
+        for key in ("text", "title", "content", "value"):
+            text = text_from_value(value.get(key))
+            if text:
+                return text
+    return ""
+
+
+def goofish_item_payload(row: dict[str, Any]) -> dict[str, Any]:
+    for key in ("data", "cardData", "exContent", "main"):
+        value = row.get(key)
+        if isinstance(value, dict):
+            return value
+    return row
+
+
+def goofish_title(item: dict[str, Any]) -> str:
+    value = first_nested_value(
+        item,
+        [
+            ("title",),
+            ("titleSummary", "text"),
+            ("itemTextDTO", "title"),
+            ("main", "title"),
+            ("exContent", "title"),
+        ],
+    )
+    return text_from_value(value)
+
+
+def goofish_item_id(item: dict[str, Any]) -> str:
+    value = first_nested_value(
+        item,
+        [
+            ("id",),
+            ("itemId",),
+            ("item_id",),
+            ("main", "itemId"),
+            ("exContent", "itemId"),
+        ],
+    )
+    return str(value) if value is not None else ""
+
+
+def goofish_category_id(item: dict[str, Any]) -> str:
+    value = first_nested_value(
+        item,
+        [
+            ("categoryId",),
+            ("trackParams", "cateId"),
+            ("clickParam", "args", "cCatId"),
+            ("main", "categoryId"),
+            ("exContent", "categoryId"),
+        ],
+    )
+    return str(value) if value is not None else "0"
+
+
+def goofish_price(item: dict[str, Any]) -> float | None:
+    value = first_nested_value(
+        item,
+        [
+            ("price",),
+            ("priceInfo",),
+            ("priceText",),
+            ("main", "price"),
+            ("exContent", "price"),
+        ],
+    )
+    return parse_cny_price(value)
+
+
+def goofish_location(item: dict[str, Any]) -> str:
+    value = first_nested_value(
+        item,
+        [
+            ("city",),
+            ("area",),
+            ("userInfo", "city"),
+            ("seller", "sellerNick"),
+            ("exContent", "area"),
+        ],
+    )
+    return text_from_value(value)
+
+
+def list_from_config(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [item.strip().lower() for item in value.split(",") if item.strip()]
+    if isinstance(value, list):
+        return [str(item).strip().lower() for item in value if str(item).strip()]
+    return []
+
+
+def unique_terms(*groups: list[str]) -> list[str]:
+    terms: list[str] = []
+    for group in groups:
+        for term in group:
+            cleaned = str(term).strip().lower()
+            if cleaned and cleaned not in terms:
+                terms.append(cleaned)
+    return terms
+
+
+def china_reference_query(watch: dict[str, Any]) -> str:
+    return str(watch.get("china_reference_query") or watch["name"]).strip()
+
+
+def china_reference_terms(watch: dict[str, Any], query: str) -> list[str]:
+    configured_terms = list_from_config(watch.get("china_reference_terms"))
+    if configured_terms:
+        return configured_terms
+    include_terms = list_from_config(watch.get("include_terms"))
+    if include_terms:
+        return include_terms
+    return terms_for_query(query)
+
+
+def accepted_china_reference_candidate(
+    price_cny: float,
+    snippet: str,
+    watch: dict[str, Any],
+    reference: dict[str, Any],
+    query_terms: list[str],
+) -> dict[str, Any] | None:
+    min_price = float(watch.get("china_reference_min_price_cny", reference.get("min_price_cny", 100)))
+    max_price = float(watch.get("china_reference_max_price_cny", reference.get("max_price_cny", 200_000)))
+    if not (min_price <= price_cny <= max_price):
+        return None
+
+    lower_snippet = snippet.lower()
+    risky_terms = unique_terms(
+        list_from_config(watch.get("exclude_terms")),
+        [term.lower() for term in DEFAULT_RISKY_TERMS],
+        [term.lower() for term in DEFAULT_CHINA_RISKY_TERMS],
+    )
+    accessory_terms = unique_terms(
+        list_from_config(watch.get("accessory_terms")),
+        [term.lower() for term in DEFAULT_ACCESSORY_TERMS],
+        [term.lower() for term in DEFAULT_CHINA_ACCESSORY_TERMS],
+    )
+    if not bool(watch.get("allow_risky", False)) and any(term in lower_snippet for term in risky_terms):
+        return None
+    if not bool(watch.get("allow_accessory", False)) and any(term in lower_snippet for term in accessory_terms):
+        return None
+
+    matched_terms = [term for term in query_terms if term.lower() in lower_snippet]
+    min_matched_terms = int(
+        watch.get("china_reference_min_matched_terms", default_min_matched_terms(query_terms))
+    )
+    if len(matched_terms) < min_matched_terms:
+        return None
+
+    require_sequence = bool(watch.get("china_reference_require_query_sequence", watch.get("require_query_sequence", True)))
+    if require_sequence and not has_required_query_sequence(query_terms, snippet, watch):
+        return None
+
+    return {"score": len(matched_terms), "matched_terms": matched_terms}
+
+
+def goofish_search_url(reference: dict[str, Any], query: str) -> str:
+    return render_url(str(reference.get("url_template") or DEFAULT_CHINA_REFERENCE["url_template"]), query)
+
+
+def goofish_token_from_cookie(cookie: str) -> str:
+    match = re.search(r"(?:^|;\s*)_m_h5_tk=([^_;]+)", cookie)
+    return match.group(1) if match else ""
+
+
+def build_goofish_api_url(reference: dict[str, Any], query: str) -> str:
+    app_key = str(reference.get("app_key") or DEFAULT_CHINA_REFERENCE["app_key"])
+    api = str(reference.get("api") or DEFAULT_CHINA_REFERENCE["api"])
+    data = {
+        "pageNumber": 1,
+        "keyword": query,
+        "fromFilter": False,
+        "rowsPerPage": int(reference.get("rows_per_page", 30)),
+        "sortValue": "",
+        "sortField": "",
+        "customDistance": "",
+        "gps": "",
+        "propValueStr": {},
+        "customGps": "",
+        "searchReqFromPage": "pcSearch",
+        "extraFilterValue": {},
+        "userPositionJson": "",
+    }
+    data_json = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+    timestamp = str(int(time.time() * 1000))
+    cookie = str(secret_value(reference.get("cookie", "")) or "")
+    token = goofish_token_from_cookie(cookie)
+    sign = hashlib.md5(f"{token}&{timestamp}&{app_key}&{data_json}".encode("utf-8")).hexdigest() if token else ""
+    params = {
+        "jsv": "2.7.3",
+        "appKey": app_key,
+        "t": timestamp,
+        "sign": sign,
+        "v": "1.0",
+        "type": "originaljson",
+        "dataType": "json",
+        "api": api,
+        "data": data_json,
+    }
+    return f"{reference.get('api_url_template') or DEFAULT_CHINA_REFERENCE['api_url_template']}?{urllib.parse.urlencode(params)}"
+
+
+def goofish_response_error(payload: dict[str, Any]) -> str:
+    ret = payload.get("ret")
+    if not ret:
+        return ""
+    values = ret if isinstance(ret, list) else [ret]
+    for value in values:
+        text = str(value)
+        if not text.startswith("SUCCESS"):
+            return text.split("::", 1)[0]
+    return ""
+
+
+def extract_goofish_reference_candidates(
+    payload: dict[str, Any],
+    watch: dict[str, Any],
+    reference: dict[str, Any],
+) -> list[dict[str, Any]]:
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    rows = data.get("resultList") if isinstance(data.get("resultList"), list) else []
+    query = china_reference_query(watch)
+    query_terms = china_reference_terms(watch, query)
+    candidates: list[dict[str, Any]] = []
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        item = goofish_item_payload(row)
+        if not isinstance(item, dict):
+            continue
+        title = goofish_title(item)
+        price = goofish_price(item)
+        item_id = goofish_item_id(item)
+        if not title or price is None or not item_id:
+            continue
+        category_id = goofish_category_id(item)
+        location = goofish_location(item)
+        raw_snippet = json.dumps(item, ensure_ascii=False)
+        snippet = strip_html(" ".join(part for part in [title, location, raw_snippet] if part))
+        accepted = accepted_china_reference_candidate(price, snippet, watch, reference, query_terms)
+        if not accepted:
+            continue
+        url = f"https://www.goofish.com/item?id={urllib.parse.quote(item_id)}&categoryId={urllib.parse.quote(category_id)}"
+        candidates.append(
+            {
+                "reference_provider": str(reference.get("provider", "Goofish")),
+                "reference_price_cny": price,
+                "reference_title": title,
+                "reference_url": url,
+                "reference_location": location,
+                "reference_snippet": snippet[:260],
+                **accepted,
+            }
+        )
+
+    candidates.sort(key=lambda item: (item["reference_price_cny"], -item["score"]))
+    return candidates[:10]
+
+
+def check_china_reference(watch: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+    reference = merged_china_reference_config(config)
+    provider = str(reference.get("provider", "Goofish"))
+    if not bool(reference.get("enabled", False)):
+        return {}
+    if provider.lower() != "goofish":
+        return {
+            "reference_provider": provider,
+            "reference_error": f"Unsupported reference provider: {provider}",
+        }
+
+    query = china_reference_query(watch)
+    search_url = goofish_search_url(reference, query)
+    cookie = str(secret_value(reference.get("cookie", "")) or "")
+    headers = {
+        "Accept": "application/json,text/plain,*/*",
+        "Origin": "https://www.goofish.com",
+        "Referer": search_url,
+    }
+    if cookie:
+        headers["Cookie"] = cookie
+
+    try:
+        api_url = build_goofish_api_url(reference, query)
+        raw = fetch_text(api_url, int(reference.get("timeout_seconds", 12)), headers)
+        payload = json.loads(raw)
+        error = goofish_response_error(payload)
+        if error:
+            return {
+                "reference_provider": provider,
+                "reference_search_url": search_url,
+                "reference_error": error,
+            }
+        candidates = extract_goofish_reference_candidates(payload, watch, reference)
+        if not candidates:
+            return {
+                "reference_provider": provider,
+                "reference_search_url": search_url,
+                "reference_error": "No relevant Goofish reference found",
+            }
+        best = candidates[0]
+        best["reference_search_url"] = search_url
+        return best
+    except json.JSONDecodeError:
+        return {
+            "reference_provider": provider,
+            "reference_search_url": search_url,
+            "reference_error": "Invalid Goofish response",
+        }
+    except urllib.error.HTTPError as exc:
+        return {
+            "reference_provider": provider,
+            "reference_search_url": search_url,
+            "reference_error": f"HTTP {exc.code}: {exc.reason}",
+        }
+    except urllib.error.URLError as exc:
+        return {
+            "reference_provider": provider,
+            "reference_search_url": search_url,
+            "reference_error": f"Network error: {exc.reason}",
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "reference_provider": provider,
+            "reference_search_url": search_url,
+            "reference_error": str(exc),
+        }
+
+
+def attach_reference(results: list[dict[str, Any]], reference: dict[str, Any]) -> None:
+    if not reference:
+        return
+    for result in results:
+        result.update(reference)
+
+
+def format_cny_price(price: Any) -> str:
+    if not isinstance(price, (int, float)):
+        return "-"
+    if float(price).is_integer():
+        return f"{int(price):,} CNY"
+    return f"{price:,.2f} CNY"
+
+
+def format_reference_short(item: dict[str, Any]) -> str:
+    provider = item.get("reference_provider")
+    if not provider:
+        return ""
+    price = item.get("reference_price_cny")
+    if isinstance(price, (int, float)):
+        title = item.get("reference_title") or ""
+        return f"{format_cny_price(price)} via {provider}" + (f" / {title}" if title else "")
+    error = item.get("reference_error")
+    return f"{provider}: {error}" if error else ""
+
+
+def format_reference_report(item: dict[str, Any]) -> str:
+    provider = item.get("reference_provider")
+    if not provider:
+        return "-"
+    price = item.get("reference_price_cny")
+    if isinstance(price, (int, float)):
+        label = f"{format_cny_price(price)} {provider}"
+        url = item.get("reference_url") or item.get("reference_search_url")
+        return f"[{label}]({url})" if url else label
+    error = item.get("reference_error")
+    search_url = item.get("reference_search_url")
+    label = f"{provider}: {error}" if error else str(provider)
+    return f"[{label}]({search_url})" if search_url else label
 
 
 def condition_allowed(watch: dict[str, Any], provider: dict[str, Any]) -> bool:
@@ -735,6 +1241,7 @@ def format_alert(alerts: list[dict[str, Any]]) -> str:
     for item in alerts:
         price = item.get("price_jpy")
         target = item.get("target_price_jpy")
+        reference = format_reference_short(item)
         lines.extend(
             [
                 "",
@@ -742,8 +1249,10 @@ def format_alert(alerts: list[dict[str, Any]]) -> str:
                 f"Provider: {item['provider']} ({item.get('source_type', '')}, {item.get('condition', '')})",
                 f"Price: {price:,} JPY" if isinstance(price, int) else "Price: -",
                 f"Target: {target:,} JPY" if isinstance(target, int) else "Target: auto baseline",
+                f"China Ref: {reference}" if reference else "China Ref: -",
                 f"Reason: {item.get('hit_reason', '')}",
                 f"URL: {item['url']}",
+                f"China Ref URL: {item.get('reference_url') or item.get('reference_search_url', '')}",
                 f"Snippet: {item.get('snippet', '')}",
             ]
         )
@@ -767,6 +1276,11 @@ def append_log(path: Path, results: list[dict[str, Any]]) -> None:
                 "hit",
                 "error",
                 "url",
+                "reference_provider",
+                "reference_price_cny",
+                "reference_url",
+                "reference_title",
+                "reference_error",
                 "snippet",
             ],
         )
@@ -788,8 +1302,8 @@ def write_report(path: Path, config: dict[str, Any], results: list[dict[str, Any
         f"- Generated: {local_iso()}",
         f"- Watches: {len(config.get('watches', []))}",
         "",
-        "| Signal | Product | Provider | Source | Condition | Price | Target | Notes |",
-        "| --- | --- | --- | --- | --- | ---: | ---: | --- |",
+        "| Signal | Product | Provider | Source | Condition | Price | Target | China Ref | Notes |",
+        "| --- | --- | --- | --- | --- | ---: | ---: | --- | --- |",
     ]
     sorted_results = sorted(
         results,
@@ -805,10 +1319,11 @@ def write_report(path: Path, config: dict[str, Any], results: list[dict[str, Any
         )
         note = result.get("hit_reason") or result.get("error") or result.get("snippet", "")[:120]
         item_link = f"[{result['provider']}]({result['url']})"
+        reference = format_reference_report(result)
         lines.append(
             f"| {md_cell(signal)} | {md_cell(result['watch_name'])} | {item_link} | "
             f"{md_cell(result.get('source_type', ''))} | {md_cell(result.get('condition', ''))} | "
-            f"{md_cell(price)} | {md_cell(target)} | {md_cell(note)} |"
+            f"{md_cell(price)} | {md_cell(target)} | {md_cell(reference)} | {md_cell(note)} |"
         )
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -846,6 +1361,7 @@ def default_config() -> dict[str, Any]:
             },
         },
         "providers": DEFAULT_PROVIDERS,
+        "china_reference": DEFAULT_CHINA_REFERENCE,
         "watches": [],
     }
 
@@ -857,6 +1373,7 @@ def load_or_create_config(path: Path) -> dict[str, Any]:
         config = default_config()
         save_json_atomic(path, config)
     config.setdefault("providers", DEFAULT_PROVIDERS)
+    config.setdefault("china_reference", DEFAULT_CHINA_REFERENCE)
     config.setdefault("watches", [])
     return config
 
@@ -955,6 +1472,7 @@ def run_once(config_path: Path, args: argparse.Namespace) -> int:
             check_provider(watch, provider, config)
             for provider in enabled_providers(config, watch)
         ]
+        attach_reference(watch_results, check_china_reference(watch, config))
         alerts.extend(evaluate_hits(watch, watch_results, state, repeat_hours))
         all_results.extend(watch_results)
 
@@ -962,11 +1480,17 @@ def run_once(config_path: Path, args: argparse.Namespace) -> int:
     write_report(report_path, config, all_results)
     save_json_atomic(state_path, state)
 
+    reference_printed: set[str] = set()
     for result in all_results:
         price = f"{result['price_jpy']:,} JPY" if isinstance(result.get("price_jpy"), int) else "-"
         marker = "BUY" if result.get("hit") else "..."
         error = f" ({result['error']})" if result.get("error") else ""
-        print(f"[{marker}] {result['watch_name']} / {result['provider']}: {price}{error}")
+        reference = ""
+        if result["watch_name"] not in reference_printed:
+            reference_printed.add(result["watch_name"])
+            reference_summary = format_reference_short(result)
+            reference = f" | CN ref: {reference_summary}" if reference_summary else ""
+        print(f"[{marker}] {result['watch_name']} / {result['provider']}: {price}{error}{reference}")
 
     if alerts:
         message = format_alert(alerts)

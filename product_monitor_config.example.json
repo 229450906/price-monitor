@@ -41,6 +41,7 @@
       "condition": "new",
       "enabled": true,
       "name": "Yahoo Shopping",
+      "require_item_url": true,
       "source_type": "shop search",
       "url_template": "https://shopping.yahoo.co.jp/search?p={query_plus}"
     },
@@ -48,6 +49,7 @@
       "condition": "new",
       "enabled": true,
       "name": "Rakuten",
+      "require_item_url": true,
       "source_type": "shop search",
       "url_template": "https://search.rakuten.co.jp/search/mall/{query_path}/"
     },
@@ -55,6 +57,7 @@
       "condition": "used",
       "enabled": true,
       "name": "Mercari",
+      "require_item_url": true,
       "source_type": "flea market",
       "url_template": "https://jp.mercari.com/search?keyword={query_plus}&sort=price&order=asc"
     },
@@ -62,6 +65,7 @@
       "condition": "used",
       "enabled": true,
       "name": "Yahoo Auctions",
+      "require_item_url": true,
       "source_type": "auction",
       "url_template": "https://auctions.yahoo.co.jp/search/search?p={query_plus}&n=50&s1=cbids&o1=a"
     },
@@ -69,6 +73,7 @@
       "condition": "used",
       "enabled": true,
       "name": "HardOff NetMall",
+      "require_item_url": true,
       "source_type": "shop used",
       "url_template": "https://netmall.hardoff.co.jp/search/?q={query_plus}"
     },
@@ -76,10 +81,25 @@
       "condition": "used",
       "enabled": true,
       "name": "Janpara",
+      "require_item_url": true,
       "source_type": "shop used",
       "url_template": "https://www.janpara.co.jp/sale/search/result/?KEYWORDS={query_plus}"
     }
   ],
+  "china_reference": {
+    "api": "mtop.taobao.idlemtopsearch.pc.search",
+    "api_url_template": "https://h5api.m.goofish.com/h5/mtop.taobao.idlemtopsearch.pc.search/1.0/",
+    "app_key": "34839810",
+    "cookie": "env:PRICE_GOOFISH_COOKIE",
+    "currency": "CNY",
+    "enabled": true,
+    "max_price_cny": 200000,
+    "min_price_cny": 100,
+    "provider": "Goofish",
+    "rows_per_page": 30,
+    "timeout_seconds": 12,
+    "url_template": "https://www.goofish.com/search?q={query_plus}"
+  },
   "report_file": "product_price_report.md",
   "state_file": ".product_price_state.json",
   "watches": []

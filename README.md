@@ -12,6 +12,10 @@ Default providers:
 - HardOff NetMall
 - Janpara
 
+Optional reference source:
+
+- Goofish / 闲鱼, shown as a China CNY reference only
+
 The monitor reads public pages only. It does not log in, place orders, or store marketplace credentials.
 
 ## Quick Start
@@ -118,6 +122,7 @@ Use `--no-alert-first-seen` if you only want alerts after a baseline has already
 The default filters reject high-risk terms such as `ジャンク`, `訳あり`, `動作未確認`, `箱のみ`, and `for parts`.
 Accessory terms such as `cable`, `adapter`, `case`, `cover`, `ケーブル`, and `ケース` are also filtered by default.
 Yahoo Auctions results use item links and `即決` / buy-now prices only; current bid prices are ignored because they are not direct purchase prices.
+Enabled providers require a parsed item URL by default, so alerts should link to product pages instead of search pages.
 
 Allow risky listings:
 
@@ -129,6 +134,32 @@ Allow accessories:
 
 ```powershell
 python .\product_price_monitor.py --watch "RTX 5080 cable" --allow-accessory --once
+```
+
+## China Reference
+
+The report and alert messages can include a China-market reference from Goofish / 闲鱼. This is informational only:
+
+- it is shown in CNY as `China Ref`
+- it does not affect JPY target checks or alert decisions
+- it uses public search data and never logs in or places orders
+
+If Goofish rate limits or anti-bot checks block an unauthenticated request, the monitor records the reference error and continues checking the Japanese providers. You can optionally provide a browser cookie through an environment variable if the public request needs it; keep that value local and do not commit or share it:
+
+```text
+PRICE_GOOFISH_COOKIE=_m_h5_tk=...; other_public_cookie=...
+```
+
+For products whose China listing titles differ from the Japanese watch name, add watch-level fields in your local config:
+
+```json
+{
+  "name": "Meta Quest 3",
+  "china_reference_query": "Quest3",
+  "china_reference_terms": ["quest", "3"],
+  "china_reference_min_price_cny": 500,
+  "china_reference_require_query_sequence": false
+}
 ```
 
 ## Runtime Files

@@ -146,6 +146,81 @@ class ProductPriceMonitorTests(unittest.TestCase):
     def test_markdown_cells_escape_table_pipes(self) -> None:
         self.assertEqual(monitor.md_cell("a|b\nc"), "a\\|b c")
 
+    def test_goofish_reference_filters_accessories_and_3s(self) -> None:
+        payload = {
+            "ret": ["SUCCESS::调用成功"],
+            "data": {
+                "resultList": [
+                    {
+                        "data": {
+                            "id": "1001",
+                            "categoryId": "50025382",
+                            "title": "Meta Quest 3S 128G 国行",
+                            "price": "2600",
+                            "city": "上海",
+                        }
+                    },
+                    {
+                        "data": {
+                            "id": "1002",
+                            "categoryId": "50025382",
+                            "title": "Quest3 128G 头带 配件",
+                            "price": "120",
+                            "city": "杭州",
+                        }
+                    },
+                    {
+                        "data": {
+                            "id": "1003",
+                            "categoryId": "50025382",
+                            "title": "Meta Quest 3 128G 成色好",
+                            "price": "3200",
+                            "city": "东京",
+                        }
+                    },
+                ]
+            },
+        }
+        watch = {
+            "name": "Meta Quest 3",
+            "china_reference_terms": ["meta", "quest", "3"],
+            "china_reference_min_price_cny": 500,
+            "china_reference_require_query_sequence": False,
+            "exclude_terms": ["quest 3s"],
+            "accessory_terms": ["头带", "配件"],
+        }
+        reference = monitor.DEFAULT_CHINA_REFERENCE
+
+        candidates = monitor.extract_goofish_reference_candidates(payload, watch, reference)
+
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["reference_price_cny"], 3200)
+        self.assertEqual(candidates[0]["reference_url"], "https://www.goofish.com/item?id=1003&categoryId=50025382")
+
+    def test_alert_includes_china_reference(self) -> None:
+        message = monitor.format_alert(
+            [
+                {
+                    "watch_name": "RTX 5080",
+                    "provider": "Yahoo Auctions",
+                    "source_type": "auction",
+                    "condition": "used",
+                    "price_jpy": 192000,
+                    "target_price_jpy": None,
+                    "hit_reason": "new low",
+                    "url": "https://auctions.yahoo.co.jp/jp/auction/example",
+                    "reference_provider": "Goofish",
+                    "reference_price_cny": 6200,
+                    "reference_title": "RTX 5080 显卡",
+                    "reference_url": "https://www.goofish.com/item?id=abc&categoryId=0",
+                    "snippet": "sample",
+                }
+            ]
+        )
+
+        self.assertIn("China Ref: 6,200 CNY via Goofish / RTX 5080 显卡", message)
+        self.assertIn("China Ref URL: https://www.goofish.com/item?id=abc&categoryId=0", message)
+
 
 if __name__ == "__main__":
     unittest.main()
