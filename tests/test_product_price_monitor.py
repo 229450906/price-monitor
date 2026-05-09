@@ -197,6 +197,71 @@ class ProductPriceMonitorTests(unittest.TestCase):
         self.assertEqual(candidates[0]["reference_price_cny"], 3200)
         self.assertEqual(candidates[0]["reference_url"], "https://www.goofish.com/item?id=1003&categoryId=50025382")
 
+    def test_goofish_reference_parses_nested_pc_search_item(self) -> None:
+        payload = {
+            "ret": ["SUCCESS::调用成功"],
+            "data": {
+                "resultList": [
+                    {
+                        "data": {
+                            "item": {
+                                "main": {
+                                    "clickParam": {
+                                        "args": {
+                                            "id": "2001",
+                                            "cCatId": "50025382",
+                                            "displayPrice": "150",
+                                            "p_city": "广东",
+                                        }
+                                    },
+                                    "exContent": {
+                                        "title": "Meta Quest3 一体机 租赁 出租",
+                                        "soldPrice": "150",
+                                        "detailParams": {"itemId": "2001"},
+                                    },
+                                }
+                            }
+                        }
+                    },
+                    {
+                        "data": {
+                            "item": {
+                                "main": {
+                                    "clickParam": {
+                                        "args": {
+                                            "id": "2002",
+                                            "cCatId": "50025382",
+                                            "displayPrice": "2850",
+                                            "p_city": "上海",
+                                        }
+                                    },
+                                    "exContent": {
+                                        "title": "Meta Quest3 128G 本体 成色不错",
+                                        "soldPrice": "2850",
+                                        "detailParams": {"itemId": "2002"},
+                                    },
+                                }
+                            }
+                        }
+                    },
+                ]
+            },
+        }
+        watch = {
+            "name": "Meta Quest 3",
+            "china_reference_terms": ["quest", "3"],
+            "china_reference_min_matched_terms": 2,
+            "china_reference_min_price_cny": 500,
+            "china_reference_require_query_sequence": False,
+        }
+
+        candidates = monitor.extract_goofish_reference_candidates(payload, watch, monitor.DEFAULT_CHINA_REFERENCE)
+
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["reference_price_cny"], 2850)
+        self.assertEqual(candidates[0]["reference_title"], "Meta Quest3 128G 本体 成色不错")
+        self.assertEqual(candidates[0]["reference_url"], "https://www.goofish.com/item?id=2002&categoryId=50025382")
+
     def test_alert_includes_china_reference(self) -> None:
         message = monitor.format_alert(
             [
@@ -220,6 +285,16 @@ class ProductPriceMonitorTests(unittest.TestCase):
 
         self.assertIn("China Ref: 6,200 CNY via Goofish / RTX 5080 显卡", message)
         self.assertIn("China Ref URL: https://www.goofish.com/item?id=abc&categoryId=0", message)
+
+    def test_goofish_token_uses_last_duplicate_cookie_value(self) -> None:
+        cookie = "_m_h5_tk=oldtoken_123; cna=x; _m_h5_tk=newtoken_456"
+
+        self.assertEqual(monitor.goofish_token_from_cookie(cookie), "newtoken")
+
+    def test_goofish_cookie_header_dedupes_duplicate_names(self) -> None:
+        cookie = "_m_h5_tk=oldtoken_123; cna=x; _m_h5_tk=newtoken_456; cna=y"
+
+        self.assertEqual(monitor.dedupe_cookie_header(cookie), "_m_h5_tk=newtoken_456; cna=y")
 
 
 if __name__ == "__main__":

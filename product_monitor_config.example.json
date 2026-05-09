@@ -98,7 +98,8 @@
     "provider": "Goofish",
     "rows_per_page": 30,
     "timeout_seconds": 12,
-    "url_template": "https://www.goofish.com/search?q={query_plus}"
+    "url_template": "https://www.goofish.com/search?q={query_plus}",
+    "user_agent": "env:PRICE_GOOFISH_USER_AGENT"
   },
   "report_file": "product_price_report.md",
   "state_file": ".product_price_state.json",

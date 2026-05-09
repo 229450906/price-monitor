@@ -148,6 +148,7 @@ If Goofish rate limits or anti-bot checks block an unauthenticated request, the 
 
 ```text
 PRICE_GOOFISH_COOKIE=_m_h5_tk=...; other_public_cookie=...
+PRICE_GOOFISH_USER_AGENT=Mozilla/5.0 ...
 ```
 
 For products whose China listing titles differ from the Japanese watch name, add watch-level fields in your local config:

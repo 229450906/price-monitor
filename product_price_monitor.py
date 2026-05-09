@@ -154,6 +154,7 @@ DEFAULT_CHINA_REFERENCE = {
     "min_price_cny": 100,
     "max_price_cny": 200_000,
     "cookie": "env:PRICE_GOOFISH_COOKIE",
+    "user_agent": "env:PRICE_GOOFISH_USER_AGENT",
 }
 
 DEFAULT_CHINA_RISKY_TERMS = [
@@ -170,6 +171,13 @@ DEFAULT_CHINA_RISKY_TERMS = [
     "空盒",
     "盒子",
     "包装盒",
+    "租赁",
+    "出租",
+    "租金",
+    "租期",
+    "免押",
+    "押金",
+    "芝麻信用",
 ]
 
 DEFAULT_CHINA_ACCESSORY_TERMS = [
@@ -187,10 +195,12 @@ DEFAULT_CHINA_ACCESSORY_TERMS = [
     "收纳包",
     "贴膜",
     "镜片",
-    "头带",
     "电池头带",
-    "面罩",
-    "手柄",
+    "精英头带",
+    "头带配件",
+    "面罩配件",
+    "手柄保护",
+    "手柄套",
 ]
 
 
@@ -534,6 +544,7 @@ def parse_cny_price(value: Any) -> float | None:
             ("amount",),
             ("integer",),
             ("priceInfo",),
+            ("text",),
         ):
             price = parse_cny_price(first_nested_value(value, [path]))
             if price is not None:
@@ -600,6 +611,15 @@ def text_from_value(value: Any) -> str:
 
 
 def goofish_item_payload(row: dict[str, Any]) -> dict[str, Any]:
+    data = row.get("data")
+    if isinstance(data, dict):
+        main = first_nested_value(data, [("item", "main")])
+        if isinstance(main, dict):
+            ex_content = main.get("exContent") if isinstance(main.get("exContent"), dict) else {}
+            click_args = first_nested_value(main, [("clickParam", "args")])
+            click_args = click_args if isinstance(click_args, dict) else {}
+            detail_params = ex_content.get("detailParams") if isinstance(ex_content.get("detailParams"), dict) else {}
+            return {**click_args, **detail_params, **ex_content}
     for key in ("data", "cardData", "exContent", "main"):
         value = row.get(key)
         if isinstance(value, dict):
@@ -616,6 +636,7 @@ def goofish_title(item: dict[str, Any]) -> str:
             ("itemTextDTO", "title"),
             ("main", "title"),
             ("exContent", "title"),
+            ("detailParams", "title"),
         ],
     )
     return text_from_value(value)
@@ -630,6 +651,9 @@ def goofish_item_id(item: dict[str, Any]) -> str:
             ("item_id",),
             ("main", "itemId"),
             ("exContent", "itemId"),
+            ("detailParams", "itemId"),
+            ("item_id",),
+            ("id",),
         ],
     )
     return str(value) if value is not None else ""
@@ -644,6 +668,9 @@ def goofish_category_id(item: dict[str, Any]) -> str:
             ("clickParam", "args", "cCatId"),
             ("main", "categoryId"),
             ("exContent", "categoryId"),
+            ("detailParams", "categoryId"),
+            ("catId",),
+            ("cCatId",),
         ],
     )
     return str(value) if value is not None else "0"
@@ -658,6 +685,9 @@ def goofish_price(item: dict[str, Any]) -> float | None:
             ("priceText",),
             ("main", "price"),
             ("exContent", "price"),
+            ("soldPrice",),
+            ("displayPrice",),
+            ("detailParams", "soldPrice"),
         ],
     )
     return parse_cny_price(value)
@@ -672,6 +702,7 @@ def goofish_location(item: dict[str, Any]) -> str:
             ("userInfo", "city"),
             ("seller", "sellerNick"),
             ("exContent", "area"),
+            ("p_city",),
         ],
     )
     return text_from_value(value)
@@ -756,8 +787,19 @@ def goofish_search_url(reference: dict[str, Any], query: str) -> str:
 
 
 def goofish_token_from_cookie(cookie: str) -> str:
-    match = re.search(r"(?:^|;\s*)_m_h5_tk=([^_;]+)", cookie)
-    return match.group(1) if match else ""
+    matches = re.findall(r"(?:^|;\s*)_m_h5_tk=([^_;]+)", cookie)
+    return matches[-1] if matches else ""
+
+
+def dedupe_cookie_header(cookie: str) -> str:
+    values: dict[str, str] = {}
+    for part in cookie.split(";"):
+        item = part.strip()
+        if not item or "=" not in item:
+            continue
+        key, value = item.split("=", 1)
+        values[key.strip()] = value.strip()
+    return "; ".join(f"{key}={value}" for key, value in values.items())
 
 
 def build_goofish_api_url(reference: dict[str, Any], query: str) -> str:
@@ -780,7 +822,7 @@ def build_goofish_api_url(reference: dict[str, Any], query: str) -> str:
     }
     data_json = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
     timestamp = str(int(time.time() * 1000))
-    cookie = str(secret_value(reference.get("cookie", "")) or "")
+    cookie = dedupe_cookie_header(str(secret_value(reference.get("cookie", "")) or ""))
     token = goofish_token_from_cookie(cookie)
     sign = hashlib.md5(f"{token}&{timestamp}&{app_key}&{data_json}".encode("utf-8")).hexdigest() if token else ""
     params = {
@@ -833,8 +875,7 @@ def extract_goofish_reference_candidates(
             continue
         category_id = goofish_category_id(item)
         location = goofish_location(item)
-        raw_snippet = json.dumps(item, ensure_ascii=False)
-        snippet = strip_html(" ".join(part for part in [title, location, raw_snippet] if part))
+        snippet = strip_html(" ".join(part for part in [title, location] if part))
         accepted = accepted_china_reference_candidate(price, snippet, watch, reference, query_terms)
         if not accepted:
             continue
@@ -868,12 +909,15 @@ def check_china_reference(watch: dict[str, Any], config: dict[str, Any]) -> dict
 
     query = china_reference_query(watch)
     search_url = goofish_search_url(reference, query)
-    cookie = str(secret_value(reference.get("cookie", "")) or "")
+    cookie = dedupe_cookie_header(str(secret_value(reference.get("cookie", "")) or ""))
     headers = {
         "Accept": "application/json,text/plain,*/*",
         "Origin": "https://www.goofish.com",
         "Referer": search_url,
     }
+    user_agent = str(secret_value(reference.get("user_agent", "")) or "")
+    if user_agent:
+        headers["User-Agent"] = user_agent
     if cookie:
         headers["Cookie"] = cookie
 
