@@ -143,6 +143,7 @@ The report and alert messages can include a China-market reference from Goofish 
 - it is shown in CNY as `China Ref`
 - it does not affect JPY target checks or alert decisions
 - it uses public search data and never logs in or places orders
+- it is cached by default, refreshing at most one watch per run and each watch every 30 minutes
 
 If Goofish rate limits or anti-bot checks block an unauthenticated request, the monitor records the reference error and continues checking the Japanese providers. You can optionally provide a browser cookie through an environment variable if the public request needs it; keep that value local and do not commit or share it:
 

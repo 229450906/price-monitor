@@ -151,6 +151,8 @@ DEFAULT_CHINA_REFERENCE = {
     "api": "mtop.taobao.idlemtopsearch.pc.search",
     "rows_per_page": 30,
     "timeout_seconds": 12,
+    "refresh_seconds": 1800,
+    "max_checks_per_run": 1,
     "min_price_cny": 100,
     "max_price_cny": 200_000,
     "cookie": "env:PRICE_GOOFISH_COOKIE",
@@ -975,6 +977,55 @@ def attach_reference(results: list[dict[str, Any]], reference: dict[str, Any]) -
         result.update(reference)
 
 
+def cached_china_reference_is_fresh(cached: dict[str, Any], refresh_seconds: int) -> bool:
+    checked_at = cached.get("reference_checked_at")
+    if not isinstance(checked_at, str):
+        return False
+    try:
+        checked = dt.datetime.fromisoformat(checked_at)
+    except ValueError:
+        return False
+    if checked.tzinfo is None:
+        checked = checked.replace(tzinfo=dt.UTC)
+    return (utc_now() - checked).total_seconds() < refresh_seconds
+
+
+def china_reference_pending(config: dict[str, Any]) -> dict[str, Any]:
+    reference = merged_china_reference_config(config)
+    return {
+        "reference_provider": reference.get("provider", "Goofish"),
+        "reference_error": "China reference pending refresh",
+    }
+
+
+def get_china_reference_for_watch(
+    watch: dict[str, Any],
+    config: dict[str, Any],
+    state: dict[str, Any],
+    can_refresh: bool,
+) -> tuple[dict[str, Any], bool]:
+    reference_config = merged_china_reference_config(config)
+    if not bool(reference_config.get("enabled", False)):
+        return {}, False
+
+    refresh_seconds = int(reference_config.get("refresh_seconds", 1800))
+    state.setdefault("watches", {})
+    watch_state = state["watches"].setdefault(watch_key(watch["name"]), {})
+    cached = watch_state.get("china_reference")
+    if isinstance(cached, dict) and cached_china_reference_is_fresh(cached, refresh_seconds):
+        return cached, False
+    if not can_refresh:
+        if isinstance(cached, dict):
+            return cached, False
+        return china_reference_pending(config), False
+
+    refreshed = check_china_reference(watch, config)
+    if refreshed:
+        refreshed["reference_checked_at"] = utc_now().isoformat()
+        watch_state["china_reference"] = refreshed
+    return refreshed, True
+
+
 def format_cny_price(price: Any) -> str:
     if not isinstance(price, (int, float)):
         return "-"
@@ -1510,13 +1561,24 @@ def run_once(config_path: Path, args: argparse.Namespace) -> int:
     all_results: list[dict[str, Any]] = []
     alerts: list[dict[str, Any]] = []
     repeat_hours = float(config.get("monitor", {}).get("repeat_alert_hours", 12))
+    china_reference_config = merged_china_reference_config(config)
+    max_china_reference_checks = int(china_reference_config.get("max_checks_per_run", 1))
+    china_reference_checks = 0
 
     for watch in config.get("watches", []):
         watch_results = [
             check_provider(watch, provider, config)
             for provider in enabled_providers(config, watch)
         ]
-        attach_reference(watch_results, check_china_reference(watch, config))
+        reference, did_refresh_reference = get_china_reference_for_watch(
+            watch,
+            config,
+            state,
+            china_reference_checks < max_china_reference_checks,
+        )
+        if did_refresh_reference:
+            china_reference_checks += 1
+        attach_reference(watch_results, reference)
         alerts.extend(evaluate_hits(watch, watch_results, state, repeat_hours))
         all_results.extend(watch_results)
 

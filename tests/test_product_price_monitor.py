@@ -296,6 +296,21 @@ class ProductPriceMonitorTests(unittest.TestCase):
 
         self.assertEqual(monitor.dedupe_cookie_header(cookie), "_m_h5_tk=newtoken_456; cna=y")
 
+    def test_china_reference_uses_fresh_cached_value_without_refresh(self) -> None:
+        watch = {"name": "Meta Quest 3"}
+        cached = {
+            "reference_provider": "Goofish",
+            "reference_price_cny": 3000,
+            "reference_checked_at": monitor.utc_now().isoformat(),
+        }
+        state = {"watches": {monitor.watch_key("Meta Quest 3"): {"china_reference": cached}}}
+        config = {"china_reference": {"enabled": True, "refresh_seconds": 1800}}
+
+        reference, did_refresh = monitor.get_china_reference_for_watch(watch, config, state, False)
+
+        self.assertFalse(did_refresh)
+        self.assertEqual(reference["reference_price_cny"], 3000)
+
 
 if __name__ == "__main__":
     unittest.main()
